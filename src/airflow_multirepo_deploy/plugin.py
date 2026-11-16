@@ -271,6 +271,23 @@ async def deploy_repo(request: Request, folder: str, branches: str = Form(...)):
     folder_path = Path(DAGS_FOLDER).joinpath(folder)
 
     try:
+        # A deploy of the commit that is already checked out only dirties the
+        # bundle metadata (fetched refs, post-hook output) and makes Airflow
+        # re-parse every DAG for no content change. Check the remote ref without
+        # touching the working tree or .git first, and no-op when it is unchanged.
+        active_branch = repo.active_branch.name if not repo.head.is_detached else None
+        if active_branch == new_local_branch:
+            ls_remote = repo.git.ls_remote("origin", f"refs/heads/{new_local_branch}", env=git_env)
+            remote_sha = ls_remote.split()[0] if ls_remote else None
+            if remote_sha and remote_sha == repo.head.commit.hexsha:
+                repo_meta = _load_repo(folder_path, folder)
+                return JSONResponse(
+                    {
+                        "success": "Already up to date",
+                        "repo": _repo_meta_to_dict(repo_meta) if repo_meta else None,
+                    }
+                )
+
         repo.git.checkout(new_local_branch, env=git_env)
         repo.remotes.origin.fetch(env=git_env)
         repo.git.reset("--hard", f"origin/{new_local_branch}", env=git_env)
